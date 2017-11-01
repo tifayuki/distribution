@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/docker/distribution"
 	dcontext "github.com/docker/distribution/context"
@@ -14,9 +13,6 @@ import (
 	"github.com/docker/distribution/registry/proxy/scheduler"
 	"github.com/opencontainers/go-digest"
 )
-
-// todo(richardscothern): from cache control header or config file
-const blobTTL = time.Duration(24 * 7 * time.Hour)
 
 type proxyBlobStore struct {
 	localStore     distribution.BlobStore
@@ -143,14 +139,6 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 		if err := pbs.storeLocal(ctx, dgst); err != nil {
 			dcontext.GetLogger(ctx).Errorf("Error committing to storage: %s", err.Error())
 		}
-
-		blobRef, err := reference.WithDigest(pbs.repositoryName, dgst)
-		if err != nil {
-			dcontext.GetLogger(ctx).Errorf("Error creating reference: %s", err)
-			return
-		}
-
-		pbs.scheduler.AddBlob(blobRef, repositoryTTL)
 	}(dgst)
 
 	_, err = pbs.copyContent(ctx, dgst, w)

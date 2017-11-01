@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"sync"
@@ -35,56 +34,12 @@ func NewRegistryPullThroughCache(ctx context.Context, registry distribution.Name
 		return nil, err
 	}
 
-	v := storage.NewVacuum(ctx, driver)
 	s := scheduler.New(ctx, driver, "/scheduler-state.json")
 	s.OnBlobExpire(func(ref reference.Reference) error {
-		var r reference.Canonical
-		var ok bool
-		if r, ok = ref.(reference.Canonical); !ok {
-			return fmt.Errorf("unexpected reference type : %T", ref)
-		}
-
-		repo, err := registry.Repository(ctx, r)
-		if err != nil {
-			return err
-		}
-
-		blobs := repo.Blobs(ctx)
-
-		// Clear the repository reference and descriptor caches
-		err = blobs.Delete(ctx, r.Digest())
-		if err != nil {
-			return err
-		}
-
-		err = v.RemoveBlob(r.Digest().String())
-		if err != nil {
-			return err
-		}
-
 		return nil
 	})
 
 	s.OnManifestExpire(func(ref reference.Reference) error {
-		var r reference.Canonical
-		var ok bool
-		if r, ok = ref.(reference.Canonical); !ok {
-			return fmt.Errorf("unexpected reference type : %T", ref)
-		}
-
-		repo, err := registry.Repository(ctx, r)
-		if err != nil {
-			return err
-		}
-
-		manifests, err := repo.Manifests(ctx)
-		if err != nil {
-			return err
-		}
-		err = manifests.Delete(ctx, r.Digest())
-		if err != nil {
-			return err
-		}
 		return nil
 	})
 

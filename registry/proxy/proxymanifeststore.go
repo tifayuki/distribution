@@ -2,17 +2,12 @@ package proxy
 
 import (
 	"context"
-	"time"
 
 	"github.com/docker/distribution"
-	dcontext "github.com/docker/distribution/context"
 	"github.com/docker/distribution/reference"
 	"github.com/docker/distribution/registry/proxy/scheduler"
 	"github.com/opencontainers/go-digest"
 )
-
-// todo(richardscothern): from cache control header or config
-const repositoryTTL = time.Duration(24 * 7 * time.Hour)
 
 type proxyManifestStore struct {
 	ctx             context.Context
@@ -69,18 +64,6 @@ func (pms proxyManifestStore) Get(ctx context.Context, dgst digest.Digest, optio
 		if err != nil {
 			return nil, err
 		}
-
-		// Schedule the manifest blob for removal
-		repoBlob, err := reference.WithDigest(pms.repositoryName, dgst)
-		if err != nil {
-			dcontext.GetLogger(ctx).Errorf("Error creating reference: %s", err)
-			return nil, err
-		}
-
-		pms.scheduler.AddManifest(repoBlob, repositoryTTL)
-		// Ensure the manifest blob is cleaned up
-		//pms.scheduler.AddBlob(blobRef, repositoryTTL)
-
 	}
 
 	return manifest, err
