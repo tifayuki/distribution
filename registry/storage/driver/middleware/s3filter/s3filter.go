@@ -1,4 +1,4 @@
-package middleware
+package s3filter
 
 import (
 	"context"
@@ -15,16 +15,16 @@ import (
 )
 
 const (
-	// ipRangesURL is the URL to get definition of AWS IPs
-	defaultIPRangesURL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
-	// updateFrequency tells how frequently AWS IPs need to be updated
-	defaultUpdateFrequency = time.Hour * 12
+	// DefaultIPRangesURL is the default URL to get definition of AWS IPs
+	DefaultIPRangesURL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
+	// DefaultUpdateFrequency is the default frequency that AWS IPs needs to be updated
+	DefaultUpdateFrequency = time.Hour * 12
 )
 
 // newAWSIPs returns a New awsIP object.
 // If awsRegion is `nil`, it accepts any region. Otherwise, it only allow the regions specified
-func newAWSIPs(host string, updateFrequency time.Duration, awsRegion []string) *awsIPs {
-	ips := &awsIPs{
+func newAWSIPs(host string, updateFrequency time.Duration, awsRegion []string) *AwsIPs {
+	ips := &AwsIPs{
 		host:            host,
 		updateFrequency: updateFrequency,
 		awsRegion:       awsRegion,
@@ -37,8 +37,8 @@ func newAWSIPs(host string, updateFrequency time.Duration, awsRegion []string) *
 	return ips
 }
 
-// awsIPs tracks a list of AWS ips, filtered by awsRegion
-type awsIPs struct {
+// AwsIPs tracks a list of AWS ips, filtered by awsRegion
+type AwsIPs struct {
 	host            string
 	updateFrequency time.Duration
 	ipv4            []net.IPNet
@@ -81,7 +81,7 @@ func fetchAWSIPs(url string) (awsIPResponse, error) {
 
 // tryUpdate attempts to download the new set of ip addresses.
 // tryUpdate must be thread safe with contains
-func (s *awsIPs) tryUpdate() error {
+func (s *AwsIPs) tryUpdate() error {
 	response, err := fetchAWSIPs(s.host)
 	if err != nil {
 		return err
@@ -133,7 +133,7 @@ func (s *awsIPs) tryUpdate() error {
 
 // This function is meant to be run in a background goroutine.
 // It will periodically update the ips from aws.
-func (s *awsIPs) updater() {
+func (s *AwsIPs) updater() {
 	defer close(s.updaterStopChan)
 	for {
 		time.Sleep(s.updateFrequency)
@@ -153,7 +153,7 @@ func (s *awsIPs) updater() {
 // getCandidateNetworks returns either the ipv4 or ipv6 networks
 // that were last read from aws. The networks returned
 // have the same type as the ip address provided.
-func (s *awsIPs) getCandidateNetworks(ip net.IP) []net.IPNet {
+func (s *AwsIPs) getCandidateNetworks(ip net.IP) []net.IPNet {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	if ip.To4() != nil {
@@ -164,13 +164,13 @@ func (s *awsIPs) getCandidateNetworks(ip net.IP) []net.IPNet {
 		dcontext.GetLoggerWithFields(dcontext.Background(), map[interface{}]interface{}{
 			"ip": ip,
 		}).Error("unknown ip address format")
-		// assume mismatch, pass through cloudfront
+		// assume mismatch, pass through middleware
 		return nil
 	}
 }
 
 // Contains determines whether the host is within aws.
-func (s *awsIPs) contains(ip net.IP) bool {
+func (s *AwsIPs) contains(ip net.IP) bool {
 	networks := s.getCandidateNetworks(ip)
 	for _, network := range networks {
 		if network.Contains(ip) {
@@ -196,28 +196,82 @@ func parseIPFromRequest(ctx context.Context) (net.IP, error) {
 	return ip, nil
 }
 
-// eligibleForS3 checks if a request is eligible for using S3 directly
+// EligibleForS3 checks if a request is eligible for using S3 directly
 // Return true only when the IP belongs to a specific aws region and user-agent is docker
-func eligibleForS3(ctx context.Context, awsIPs *awsIPs) bool {
+func EligibleForS3(ctx context.Context, awsIPs *AwsIPs) bool {
 	if awsIPs != nil && awsIPs.initialized {
 		if addr, err := parseIPFromRequest(ctx); err == nil {
 			request, err := dcontext.GetRequest(ctx)
 			if err != nil {
-				dcontext.GetLogger(ctx).Warnf("the CloudFront middleware cannot parse the request: %s", err)
+				dcontext.GetLogger(ctx).Warnf("the s3 filter cannot parse the request: %s", err)
 			} else {
 				loggerField := map[interface{}]interface{}{
 					"user-client": request.UserAgent(),
 					"ip":          dcontext.RemoteIP(request),
 				}
 				if awsIPs.contains(addr) {
-					dcontext.GetLoggerWithFields(ctx, loggerField).Info("request from the allowed AWS region, skipping CloudFront")
+					dcontext.GetLoggerWithFields(ctx, loggerField).Info("request from the allowed AWS region, skipping middleware")
 					return true
 				}
-				dcontext.GetLoggerWithFields(ctx, loggerField).Warn("request not from the allowed AWS region, fallback to CloudFront")
+				dcontext.GetLoggerWithFields(ctx, loggerField).Warn("request not from the allowed AWS region, fallback to middleware")
 			}
 		} else {
-			dcontext.GetLogger(ctx).WithError(err).Warn("failed to parse ip address from context, fallback to CloudFront")
+			dcontext.GetLogger(ctx).WithError(err).Warn("failed to parse ip address from context, fallback to middleware")
 		}
 	}
 	return false
+}
+
+// ParseAwsIP parses the options and returns a AwsIP pointer
+func ParseAwsIP(options map[string]interface{}) (*AwsIPs, error) {
+	// parse updatefrenquency
+	updateFrequency := DefaultUpdateFrequency
+	if u, ok := options["updatefrenquency"]; ok {
+		switch u := u.(type) {
+		case time.Duration:
+			updateFrequency = u
+		case string:
+			updateFreq, err := time.ParseDuration(u)
+			if err != nil {
+				return nil, fmt.Errorf("invalid updatefrenquency: %s", err)
+			}
+			updateFrequency = updateFreq
+		}
+	}
+
+	// parse iprangesurl
+	ipRangesURL := DefaultIPRangesURL
+	if i, ok := options["iprangesurl"]; ok {
+		if iprangeurl, ok := i.(string); ok {
+			ipRangesURL = iprangeurl
+		} else {
+			return nil, fmt.Errorf("iprangesurl must be a string")
+		}
+	}
+
+	// parse ipfilteredby
+	var awsIPs *AwsIPs
+	if ipFilteredBy, ok := options["ipfilteredby"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(ipFilteredBy)) {
+		case "", "none":
+			awsIPs = nil
+		case "aws":
+			newAWSIPs(ipRangesURL, updateFrequency, nil)
+		case "awsregion":
+			var awsRegion []string
+			if regions, ok := options["awsregion"].(string); ok {
+				for _, awsRegions := range strings.Split(regions, ",") {
+					awsRegion = append(awsRegion, strings.ToLower(strings.TrimSpace(awsRegions)))
+				}
+				awsIPs = newAWSIPs(ipRangesURL, updateFrequency, awsRegion)
+			} else {
+				return nil, fmt.Errorf("awsRegion must be a comma separated string of valid aws regions")
+			}
+		default:
+			return nil, fmt.Errorf("ipfilteredby only allows a string the following value: none|aws|awsregion")
+		}
+	} else {
+		return nil, fmt.Errorf("ipfilteredby only allows a string with the following value: none|aws|awsregion")
+	}
+	return awsIPs, nil
 }

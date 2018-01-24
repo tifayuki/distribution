@@ -1,7 +1,7 @@
-// Package middleware - cloudfront wrapper for storage libs
+// Package cloudfront - cloudfront wrapper for storage libs
 // N.B. currently only works with S3, not arbitrary sites
 //
-package middleware
+package cloudfront
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 	dcontext "github.com/docker/distribution/context"
 	storagedriver "github.com/docker/distribution/registry/storage/driver"
 	"github.com/docker/distribution/registry/storage/driver/middleware"
+	"github.com/docker/distribution/registry/storage/driver/middleware/s3filter"
 )
 
 // cloudFrontStorageMiddleware provides a simple implementation of layerHandler that
@@ -24,7 +25,7 @@ import (
 // then issues HTTP Temporary Redirects to this CloudFront content URL.
 type cloudFrontStorageMiddleware struct {
 	storagedriver.StorageDriver
-	awsIPs    *awsIPs
+	awsIPs    *s3filter.AwsIPs
 	urlSigner *sign.URLSigner
 	baseURL   string
 	duration  time.Duration
@@ -40,6 +41,7 @@ var _ storagedriver.StorageDriver = &cloudFrontStorageMiddleware{}
 // ipfilteredby: valid value "none|aws|awsregion". "none", do not filter any IP, default value. "aws", only aws IP goes
 //               to S3 directly. "awsregion", only regions listed in awsregion options goes to S3 directly
 // awsregion: a comma separated string of AWS regions.
+// updatefrenquency: how often to update AWS IP list, e.g. 12h
 func newCloudFrontStorageMiddleware(storageDriver storagedriver.StorageDriver, options map[string]interface{}) (storagedriver.StorageDriver, error) {
 	// parse baseurl
 	base, ok := options["baseurl"]
@@ -111,54 +113,9 @@ func newCloudFrontStorageMiddleware(storageDriver storagedriver.StorageDriver, o
 		}
 	}
 
-	// parse updatefrenquency
-	updateFrequency := defaultUpdateFrequency
-	if u, ok := options["updatefrenquency"]; ok {
-		switch u := u.(type) {
-		case time.Duration:
-			updateFrequency = u
-		case string:
-			updateFreq, err := time.ParseDuration(u)
-			if err != nil {
-				return nil, fmt.Errorf("invalid updatefrenquency: %s", err)
-			}
-			duration = updateFreq
-		}
-	}
-
-	// parse iprangesurl
-	ipRangesURL := defaultIPRangesURL
-	if i, ok := options["iprangesurl"]; ok {
-		if iprangeurl, ok := i.(string); ok {
-			ipRangesURL = iprangeurl
-		} else {
-			return nil, fmt.Errorf("iprangesurl must be a string")
-		}
-	}
-
-	// parse ipfilteredby
-	var awsIPs *awsIPs
-	if ipFilteredBy := options["ipfilteredby"].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(ipFilteredBy)) {
-		case "", "none":
-			awsIPs = nil
-		case "aws":
-			newAWSIPs(ipRangesURL, updateFrequency, nil)
-		case "awsregion":
-			var awsRegion []string
-			if regions, ok := options["awsregion"].(string); ok {
-				for _, awsRegions := range strings.Split(regions, ",") {
-					awsRegion = append(awsRegion, strings.ToLower(strings.TrimSpace(awsRegions)))
-				}
-				awsIPs = newAWSIPs(ipRangesURL, updateFrequency, awsRegion)
-			} else {
-				return nil, fmt.Errorf("awsRegion must be a comma separated string of valid aws regions")
-			}
-		default:
-			return nil, fmt.Errorf("ipfilteredby only allows a string the following value: none|aws|awsregion")
-		}
-	} else {
-		return nil, fmt.Errorf("ipfilteredby only allows a string with the following value: none|aws|awsregion")
+	awsIPs, err := s3filter.ParseAwsIP(options)
+	if err != nil {
+		return nil, err
 	}
 
 	return &cloudFrontStorageMiddleware{
@@ -186,7 +143,7 @@ func (lh *cloudFrontStorageMiddleware) URLFor(ctx context.Context, path string, 
 		return lh.StorageDriver.URLFor(ctx, path, options)
 	}
 
-	if eligibleForS3(ctx, lh.awsIPs) {
+	if s3filter.EligibleForS3(ctx, lh.awsIPs) {
 		return lh.StorageDriver.URLFor(ctx, path, options)
 	}
 

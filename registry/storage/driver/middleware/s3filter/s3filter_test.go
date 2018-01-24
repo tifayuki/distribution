@@ -1,16 +1,17 @@
-package middleware
+package s3filter
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	dcontext "github.com/docker/distribution/context"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	dcontext "github.com/docker/distribution/context"
 
 	"reflect" // used as a replacement for testify
 )
@@ -263,7 +264,7 @@ func TestUpdateCalledRegularly(t *testing.T) {
 }
 
 func TestEligibleForS3(t *testing.T) {
-	awsIPs := &awsIPs{
+	awsIPs := &AwsIPs{
 		ipv4: []net.IPNet{{
 			IP:   net.ParseIP("192.168.1.1"),
 			Mask: net.IPv4Mask(255, 255, 255, 0),
@@ -292,13 +293,13 @@ func TestEligibleForS3(t *testing.T) {
 		name := fmt.Sprintf("Client IP = %v",
 			testCase.Context.Value("http.request.ip"))
 		t.Run(name, func(t *testing.T) {
-			assertEqual(t, testCase.Expected, eligibleForS3(testCase.Context, awsIPs))
+			assertEqual(t, testCase.Expected, EligibleForS3(testCase.Context, awsIPs))
 		})
 	}
 }
 
 func TestEligibleForS3WithAWSIPNotInitialized(t *testing.T) {
-	awsIPs := &awsIPs{
+	awsIPs := &AwsIPs{
 		ipv4: []net.IPNet{{
 			IP:   net.ParseIP("192.168.1.1"),
 			Mask: net.IPv4Mask(255, 255, 255, 0),
@@ -327,14 +328,14 @@ func TestEligibleForS3WithAWSIPNotInitialized(t *testing.T) {
 		name := fmt.Sprintf("Client IP = %v",
 			testCase.Context.Value("http.request.ip"))
 		t.Run(name, func(t *testing.T) {
-			assertEqual(t, testCase.Expected, eligibleForS3(testCase.Context, awsIPs))
+			assertEqual(t, testCase.Expected, EligibleForS3(testCase.Context, awsIPs))
 		})
 	}
 }
 
 // populate ips with a number of different ipv4 and ipv6 networks, for the purposes
 // of benchmarking contains() performance.
-func populateRandomNetworks(b *testing.B, ips *awsIPs, ipv4Count, ipv6Count int) {
+func populateRandomNetworks(b *testing.B, ips *AwsIPs, ipv4Count, ipv6Count int) {
 	generateNetworks := func(dest *[]net.IPNet, bytes int, count int) {
 		for i := 0; i < count; i++ {
 			ip := make([]byte, bytes)
@@ -363,9 +364,9 @@ func BenchmarkContainsRandom(b *testing.B) {
 	// curl -s https://ip-ranges.amazonaws.com/ip-ranges.json | jq '.prefixes | length'
 	// 941
 	numNetworksPerType := 1000 // keep in sync with the above
-	// intentionally skip constructor when creating awsIPs, to avoid updater routine.
+	// intentionally skip constructor when creating AwsIPs, to avoid updater routine.
 	// This benchmark is only concerned with contains() performance.
-	awsIPs := awsIPs{}
+	awsIPs := AwsIPs{}
 	populateRandomNetworks(b, &awsIPs, numNetworksPerType, numNetworksPerType)
 
 	ipv4 := make([][]byte, b.N)
@@ -384,7 +385,7 @@ func BenchmarkContainsRandom(b *testing.B) {
 }
 
 func BenchmarkContainsProd(b *testing.B) {
-	awsIPs := newAWSIPs(defaultIPRangesURL, defaultUpdateFrequency, nil)
+	awsIPs := newAWSIPs(DefaultIPRangesURL, DefaultUpdateFrequency, nil)
 	ipv4 := make([][]byte, b.N)
 	ipv6 := make([][]byte, b.N)
 	for i := 0; i < b.N; i++ {
